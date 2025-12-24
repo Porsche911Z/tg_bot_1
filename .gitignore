@@ -1,0 +1,76 @@
+# Python
+
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+
+# Virtual environments
+
+.venv/
+venv/
+env/
+ENV/
+
+# Environment variables
+
+.env
+.env.*
+!.env.example
+
+# Databases
+
+*.sqlite3
+*.db
+
+# Logs
+
+*.log
+logs/
+
+# OS files
+
+.DS_Store
+Thumbs.db
+
+# IDEs / Editors
+
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Jupyter
+
+.ipynb_checkpoints/
+
+# Selenium / WebDriver
+
+*.log
+chromedriver
+geckodriver
+
+# Build / cache
+
+build/
+dist/
+.cache/
+
+# Coverage / tests
+
+.coverage
+htmlcov/
+
+# Data / temp files
+
+data/
+tmp/
+temp/
+
+
+*.pem
+*.key
+*.crt
