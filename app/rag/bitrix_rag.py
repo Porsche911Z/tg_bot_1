@@ -1,73 +1,132 @@
 
-
+import os
 from pathlib import Path
-import re
-from typing import List, Tuple
+from typing import Optional
 
-DOCS_PATH = Path("data/bitrix_docs")
-MAX_CONTEXT_CHARS = 3000
-
-
-def load_documents() -> List[Tuple[str, str]]:
-  
-    documents = []
-    if not DOCS_PATH.exists():
-        return documents
-
-    for file in DOCS_PATH.glob("*.txt"):
-        text = file.read_text(encoding="utf-8")
-        documents.append((file.name, text))
-
-    return documents
+from dotenv import load_dotenv
+from yandex_cloud_ml_sdk import YCloudML, AssistantTextSearchIndex, File
 
 
-def score_document(question: str, text: str) -> int:
-   
-    words = re.findall(r"[a-zA-Zа-яА-Я\.]+", question.lower())
-    score = 0
-    text_lower = text.lower()
+load_dotenv()
 
-    for w in words:
-        if len(w) > 3:
-            score += text_lower.count(w)
+FOLDER_ID = os.getenv("YANDEX_FOLDER_ID")          
+AUTH_TOKEN = os.getenv("YANDEX_API_KEY")           
 
-    return score
+DOCS_DIR = Path("data/bitrix_docs")
+MAX_CONTEXT_CHARS = 8000   
+
+sdk = YCloudML(
+    folder_id=FOLDER_ID,
+    auth=AUTH_TOKEN,           
+)
 
 
-def retrieve_context(question: str, top_k: int = 3) -> str:
-   
-    documents = load_documents()
+def ensure_search_index(index_name: str = "bitrix24-api-docs") -> AssistantTextSearchIndex:
+    """
+    Создаёт (или находит существующий) текстовый поисковый индекс
+    """
 
-    if not documents:
+    for idx in sdk.assistants.search_indexes():
+        if idx.name == index_name:
+            return idx
+
+    print(f"Создаём новый поисковый индекс: {index_name}")
+    index = sdk.assistants.create_search_index(
+        name=index_name,
+        description="База знаний по API Bitrix24",
+    )
+    return index
+
+
+def upload_and_index_documents(index: AssistantTextSearchIndex):
+    """
+    Загружает все .txt / .md файлы из папки и добавляет их в индекс
+    """
+    if not DOCS_DIR.exists():
+        print("Папка с документами не найдена:", DOCS_DIR)
+        return
+
+    uploaded_count = 0
+
+    for file_path in DOCS_DIR.glob("*.*"):
+        if file_path.suffix.lower() not in (".txt", ".md", ".pdf"):
+            continue
+
+        print(f"Загружаем {file_path.name} ...")
+
+        yc_file: File = sdk.files.upload(str(file_path))
+
+        index.add_file(yc_file)
+
+        uploaded_count += 1
+
+    if uploaded_count > 0:
+        print(f"Успешно добавлено {uploaded_count} документов в индекс")
+    else:
+        print("Не найдено подходящих документов для индексации")
+
+
+def get_rag_context(question: str, top_k: int = 5) -> str:
+    """
+    Основная функция: получает релевантный контекст через Yandex AI Assistant Search Index
+    """
+    index = ensure_search_index()
+
+
+    results = index.search(
+        query=question,
+        limit=top_k,
+    )
+
+    if not results:
         return ""
 
-    scored = []
-    for name, text in documents:
-        score = score_document(question, text)
-        if score > 0:
-            scored.append((score, name, text))
-
-    # если ничего не найдено — берём первые документы
-    if not scored:
-        scored = [(1, name, text) for name, text in documents]
-
-    scored.sort(reverse=True, key=lambda x: x[0])
-
     context_parts = []
-    current_length = 0
 
-    for _, name, text in scored[:top_k]:
-        header = f"\n\n### Документ: {name}\n"
-        part = header + text
-        if current_length + len(part) > MAX_CONTEXT_CHARS:
-            break
-        context_parts.append(part)
-        current_length += len(part)
+    for item in results:
+        header = f"\n\n### Документ: {item.metadata.get('file_name', 'без имени')}\n"
+        context_parts.append(header + item.text)
 
-    return "".join(context_parts)
+    context = "".join(context_parts)
+    if len(context) > MAX_CONTEXT_CHARS:
+        context = context[:MAX_CONTEXT_CHARS] + "\n... (контекст обрезан)"
+
+    return context
+
+
+def ask_question_with_rag(question: str) -> str:
+    """
+    Пример: как можно использовать полученный контекст + YandexGPT
+    """
+    context = get_rag_context(question, top_k=4)
+
+    if not context:
+        return "К сожалению, в базе знаний ничего не нашлось по этому вопросу."
+
+    prompt = f"""Ты — эксперт по API Bitrix24.
+Отвечай только на основе предоставленной ниже информации из документации.
+Если в документах нет ответа — скажи об этом честно.
+
+Контекст из базы знаний:
+{context}
+
+Вопрос пользователя: {question}
+
+Ответ:"""
+
+
+    model = sdk.models.completions("yandexgpt")  
+    model = model.configure(temperature=0.3, max_tokens=1500)
+
+    result = model.run(prompt)
+
+    return result[0].text   
 
 
 if __name__ == "__main__":
-    # простой тест
-    q = "Как создать сделку в Bitrix24 через API?"
-    print(retrieve_context(q))
+
+    question = "Как создать сделку в Bitrix24 через REST API?"
+    print("Вопрос:", question)
+    print("-" * 60)
+    answer = ask_question_with_rag(question)
+    print(answer)
